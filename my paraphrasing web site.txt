@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ScholarlyWrite AI - منصة إعادة الصياغة الأكاديمية</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React & React DOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel Standalone for JSX compilation -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Google Fonts: Inter & Cairo for typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    body {
+      font-family: 'Cairo', 'Inter', sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased selection:bg-blue-100 selection:text-blue-900">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // --- GEMINI 3 FLASH API INTEGRATION ---
+    const callGeminiAPI = async (prompt, systemInstruction, retries = 3, backoff = 1000) => {
+      const apiKey = ""; // Canvas runtime automatically supplies the Gemini API key
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+
+      const payload = {
+        contents: [{ parts: [{ text: prompt }] }],
+        systemInstruction: { parts: [{ text: systemInstruction }] }
+      };
+
+      for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+          const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
+          const result = await response.json();
+          const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) return text;
+          throw new Error("Invalid response format from Gemini API");
+        } catch (err) {
+          if (attempt === retries - 1) throw err;
+          await new Promise(res => setTimeout(res, backoff * Math.pow(2, attempt)));
+        }
+      }
+    };
+
+    // --- MAIN APPLICATION COMPONENT ---
+    function App() {
+      // Navigation State
+      const [activeTab, setActiveTab] = useState('workspace'); // 'landing', 'workspace', 'diff', 'enhancements', 'documents'
+      const [lang, setLang] = useState('ar');
+
+      // Auth State
+      const [showAuthModal, setShowAuthModal] = useState(false);
+      const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+      const [username, setUsername] = useState('');
+      const [password, setPassword] = useState('');
+      const [showPassword, setShowPassword] = useState(false);
+      const [currentUser, setCurrentUser] = useState(null);
+      const [authError, setAuthError] = useState('');
+
+      // Workspace Text State
+      const [inputText, setInputText] = useState(`Recent meta-analyses (e.g., Martinez & Vance, 2023; Zhao et al., 2022) demonstrate that high-temperature annealing significantly enhances carrier mobility in polycrystalline thin-film solar cells by 34.8% ± 2.1% (p < 0.001). However, the precise grain-boundary passivation mechanisms remain incompletely understood, specifically regarding trace lithium diffusion across the CdS/CdTe interface at T > 450°C [14-18]. These findings indicate a critical research gap that warrants further empirical investigation.`);
+      const [outputText, setOutputText] = useState('');
+      
+      // Settings
+      const [style, setStyle] = useState('Standard Academic');
+      const [strength, setStrength] = useState('Moderate');
+      const [sectionContext, setSectionContext] = useState('General Academic Text');
+      const [preservation, setPreservation] = useState({
+        terms: true,
+        citations: true,
+        numbers: true,
+        equations: true,
+        abbreviations: true
+      });
+      
+      // Processing State
+      const [isProcessing, setIsProcessing] = useState(false);
+      const [processError, setProcessError] = useState(null);
+      const [copied, setCopied] = useState(false);
+      const [showAdvanced, setShowAdvanced] = useState(false);
+
+      // Language Enhancement State
+      const [enhancementType, setEnhancementType] = useState('grammar');
+      const [enhancedResult, setEnhancedResult] = useState('');
+      const [isEnhanceTextProcessing, setIsEnhanceTextProcessing] = useState(false);
+
+      // Documents State
+      const [documents, setDocuments] = useState([
+        {
+          id: 'doc-1',
+          title: 'Solar Cell Passivation Review - Draft 2',
+          updatedAt: '2026-10-24',
+          wordCount: 412,
+          originalText: `Off-target cleavage rates remain a significant hurdle in therapeutic CRISPR-Cas9 deployment...`,
+          paraphrasedText: `A major impediment to therapeutic applications of CRISPR-Cas9 lies in unintended off-target cleavage events...`
+        }
+      ]);
+      const [docSearchQuery, setDocSearchQuery] = useState('');
+      const [toastMessage, setToastMessage] = useState(null);
+
+      const showToast = (msg) => {
+        setToastMessage(msg);
+        setTimeout(() => setToastMessage(null), 3000);
+      };
+
+      useEffect(() => {
+        document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+      }, [lang]);
+
+      const handleAuthSubmit = (e) => {
+        e.preventDefault();
+        setAuthError('');
+
+        if (!username.trim() || !password.trim()) {
+          setAuthError(lang === 'ar' ? 'يرجى إدخال اسم المستخدم وكلمة المرور' : 'Please enter both username and password');
+          return;
+        }
+
+        if (password.length < 6) {
+          setAuthError(lang === 'ar' ? 'يجب أن تتكون كلمة المرور من 6 خانات على الأقل' : 'Password must be at least 6 characters long');
+          return;
+        }
+
+        setCurrentUser({ username: username.trim() });
+        setShowAuthModal(false);
+        showToast(
+          authMode === 'login'
+            ? (lang === 'ar' ? `مرحباً بك مجدداً، ${username}!` : `Welcome back, ${username}!`)
+            : (lang === 'ar' ? `تم إنشاء الحساب بنجاح! مرحباً بك ${username}` : `Account created successfully! Welcome ${username}`)
+        );
+        setUsername('');
+        setPassword('');
+      };
+
+      const handleLogout = () => {
+        setCurrentUser(null);
+        showToast(lang === 'ar' ? 'تم تسجيل الخروج بنجاح' : 'Logged out successfully');
+      };
+
+      const handleParaphrase = async (overrideAction) => {
+        if (!inputText.trim()) {
+          setProcessError(lang === 'ar' ? 'يرجى إدخال نص أكاديمي للمعالجة' : 'Please enter academic text to paraphrase.');
+          return;
+        }
+
+        setIsProcessing(true);
+        setProcessError(null);
+
+        const systemInstruction = `You are ScholarlyWrite AI, an expert academic writing assistant.
+        Mission: Paraphrase scholarly text while preserving exact meaning, citations, numbers, equations, and technical terminology.`;
+
+        const userPrompt = `Paraphrase the following ${sectionContext} snippet.
+        Style: ${style}
+        Strength: ${strength}
+        Action Focus: ${overrideAction || 'Comprehensive Scientific Paraphrase'}
+        Output Language: ${lang === 'ar' ? 'Arabic (Academic Formal)' : 'English (Scholarly Publication Grade)'}
+
+        Source Text:
+        """${inputText}"""`;
+
+        try {
+          const result = await callGeminiAPI(userPrompt, systemInstruction);
+          setOutputText(result);
+          showToast(lang === 'ar' ? 'تمت إعادة الصياغة الأكاديمية بنجاح' : 'Paraphrasing completed successfully!');
+        } catch (err) {
+          setProcessError(lang === 'ar' ? 'حدث خطأ أثناء المعالجة. يرجى المحاولة لاحقاً.' : 'Processing failed. Please try again.');
+        } finally {
+          setIsProcessing(false);
+        }
+      };
+
+      const handleEnhanceText = async (type) => {
+        if (!inputText.trim()) return;
+
+        setIsEnhanceTextProcessing(true);
+        const systemInstruction = `You are an academic copyeditor. Enhance language quality without altering technical meaning or citations.`;
+        const prompt = `Task: ${type}\nText:\n"""${inputText}"""`;
+
+        try {
+          const result = await callGeminiAPI(prompt, systemInstruction);
+          setEnhancedResult(result);
+        } catch (err) {
+          showToast('Enhancement failed. Please retry.');
+        } finally {
+          setIsEnhanceTextProcessing(false);
+        }
+      };
+
+      const calculateStats = (text) => {
+        if (!text.trim()) return { words: 0, chars: 0 };
+        return { words: text.trim().split(/\s+/).length, chars: text.length };
+      };
+
+      const inputStats = calculateStats(inputText);
+      const outputStats = calculateStats(outputText);
+
+      const handleCopy = () => {
+        if (!outputText) return;
+        navigator.clipboard.writeText(outputText);
+        setCopied(true);
+        showToast(lang === 'ar' ? 'تم نسخ النص إلى الحافظة' : 'Copied to clipboard!');
+        setTimeout(() => setCopied(false), 2000);
+      };
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          
+          {/* Toast Notification */}
+          {toastMessage && (
+            <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white text-sm px-4 py-3 rounded-lg shadow-xl border border-slate-700">
+              {toastMessage}
+            </div>
+          )}
+
+          {/* AUTHENTICATION MODAL */}
+          {showAuthModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+              <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden">
+                <div className="bg-slate-900 p-6 text-white text-center relative">
+                  <button
+                    onClick={() => setShowAuthModal(false)}
+                    className="absolute top-4 left-4 text-slate-400 hover:text-white text-lg font-bold w-8 h-8 rounded-full hover:bg-slate-800"
+                  >
+                    ✕
+                  </button>
+                  <h3 className="text-xl font-extrabold">
+                    {authMode === 'login'
+                      ? (lang === 'ar' ? 'تسجيل الدخول إلى ScholarlyWrite' : 'Sign In to ScholarlyWrite')
+                      : (lang === 'ar' ? 'إنشاء حساب أكاديمي جديد' : 'Create Academic Account')}
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {lang === 'ar' ? 'منصة إعادة الصياغة والتحرير الأكاديمي' : 'Academic Paraphrasing Workspace'}
+                  </p>
+                </div>
+
+                <form onSubmit={handleAuthSubmit} className="p-6 space-y-4">
+                  {authError && (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+                      {authError}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                      {lang === 'ar' ? 'اسم المستخدم أو البريد الأكاديمي' : 'Username or Academic Email'}
+                    </label>
+                    <input
+                      type="text"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      placeholder={lang === 'ar' ? 'أدخل اسم المستخدم' : 'Username'}
+                      className="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:bg-white outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                      {lang === 'ar' ? 'كلمة المرور' : 'Password'}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:bg-white outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute left-3 top-2.5 text-xs text-slate-500"
+                      >
+                        {showPassword ? 'إخفاء' : 'إظهار'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-3 bg-blue-900 hover:bg-blue-800 text-white text-xs font-bold rounded-xl shadow-md transition-all"
+                  >
+                    {authMode === 'login'
+                      ? (lang === 'ar' ? 'تسجيل الدخول' : 'Sign In')
+                      : (lang === 'ar' ? 'إنشاء حساب جديد' : 'Register Account')}
+                  </button>
+
+                  <div className="pt-2 text-center text-xs text-slate-500 border-t border-slate-100">
+                    {authMode === 'login' ? (
+                      <p>
+                        {lang === 'ar' ? 'ليس لديك حساب بعد؟ ' : "Don't have an account? "}
+                        <button
+                          type="button"
+                          onClick={() => { setAuthMode('register'); setAuthError(''); }}
+                          className="text-blue-800 font-bold hover:underline"
+                        >
+                          {lang === 'ar' ? 'إنشاء حساب' : 'Sign Up'}
+                        </button>
+                      </p>
+                    ) : (
+                      <p>
+                        {lang === 'ar' ? 'لديك حساب بالفعل؟ ' : 'Already have an account? '}
+                        <button
+                          type="button"
+                          onClick={() => { setAuthMode('login'); setAuthError(''); }}
+                          className="text-blue-800 font-bold hover:underline"
+                        >
+                          {lang === 'ar' ? 'تسجيل الدخول' : 'Sign In'}
+                        </button>
+                      </p>
+                    )}
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* HEADER (WITH COPYRIGHT NOTICE IN HEADER) */}
+          <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+              
+              {/* Logo & Copyright Header */}
+              <div className="flex items-center gap-3 cursor-pointer" onClick={() => setActiveTab('workspace')}>
+                <div className="w-10 h-10 rounded-lg bg-blue-900 flex items-center justify-center text-teal-400 font-bold text-xl shadow-md">
+                  🎓
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-extrabold text-lg tracking-tight text-slate-900">ScholarlyWrite</span>
+                    <span className="bg-blue-100 text-blue-800 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded">AI</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 font-medium hidden sm:block">
+                    © Prof. Marwa Shafiek Mustafa Saleh
+                  </p>
+                </div>
+              </div>
+
+              {/* Navigation Links */}
+              <nav className="hidden md:flex items-center gap-2 text-xs font-semibold">
+                <button
+                  onClick={() => setActiveTab('workspace')}
+                  className={`px-3 py-2 rounded-md transition-colors ${activeTab === 'workspace' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:text-slate-900'}`}
+                >
+                  {lang === 'ar' ? 'محرر الصياغة' : 'Editor'}
+                </button>
+                <button
+                  onClick={() => setActiveTab('diff')}
+                  className={`px-3 py-2 rounded-md transition-colors ${activeTab === 'diff' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:text-slate-900'}`}
+                >
+                  {lang === 'ar' ? 'مقارنة التعديلات' : 'Diff Viewer'}
+                </button>
+                <button
+                  onClick={() => setActiveTab('enhancements')}
+                  className={`px-3 py-2 rounded-md transition-colors ${activeTab === 'enhancements' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:text-slate-900'}`}
+                >
+                  {lang === 'ar' ? 'تحسين اللغة' : 'Enhancements'}
+                </button>
+              </nav>
+
+              {/* Actions & Auth */}
+              <div className="flex items-center gap-3">
+                {currentUser ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-700 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+                      👤 {currentUser.username}
+                    </span>
+                    <button
+                      onClick={handleLogout}
+                      className="px-2 py-1.5 border border-red-200 hover:bg-red-50 text-red-600 rounded-lg text-xs font-semibold"
+                    >
+                      {lang === 'ar' ? 'خروج' : 'Logout'}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setAuthMode('login'); setShowAuthModal(true); }}
+                    className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold border border-slate-300"
+                  >
+                    {lang === 'ar' ? 'تسجيل الدخول' : 'Sign In'}
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setLang(lang === 'en' ? 'ar' : 'en')}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  🌐 {lang === 'en' ? 'العربية' : 'English'}
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* WORKSPACE AREA */}
+          <main className="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              
+              {/* ORIGINAL TEXT PANEL */}
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col h-[500px]">
+                <div className="p-3.5 border-b border-slate-200 bg-slate-50 rounded-t-xl flex justify-between items-center text-xs font-bold text-slate-800">
+                  <span>{lang === 'ar' ? 'النص الأصلي (المصدر)' : 'Original Passage'}</span>
+                  <span>{inputStats.words} {lang === 'ar' ? 'كلمة' : 'words'}</span>
+                </div>
+                <div className="flex-grow p-4">
+                  <textarea
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder={lang === 'ar' ? 'أدخل النص الأكاديمي هنا...' : 'Enter academic text here...'}
+                    className="w-full h-full resize-none border-none outline-none font-serif text-sm text-slate-800 bg-transparent"
+                  />
+                </div>
+                <div className="p-3 border-t border-slate-100 bg-slate-50 rounded-b-xl flex justify-between items-center">
+                  <button
+                    onClick={() => setInputText('')}
+                    className="px-3 py-1.5 bg-white border border-slate-200 text-xs text-slate-700 rounded hover:bg-slate-100"
+                  >
+                    {lang === 'ar' ? 'مسح النص' : 'Clear'}
+                  </button>
+                  <button
+                    onClick={() => handleParaphrase()}
+                    disabled={isProcessing || !inputText.trim()}
+                    className="px-5 py-2 bg-blue-900 hover:bg-blue-800 text-white text-xs font-bold rounded-lg shadow-md disabled:bg-slate-400"
+                  >
+                    {isProcessing ? (lang === 'ar' ? 'جاري المعالجة...' : 'Processing...') : (lang === 'ar' ? 'إعادة صياغة النص' : 'Paraphrase Text')}
+                  </button>
+                </div>
+              </div>
+
+              {/* OUTPUT PARAPHRASED PANEL */}
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col h-[500px]">
+                <div className="p-3.5 border-b border-slate-200 bg-slate-50 rounded-t-xl flex justify-between items-center text-xs font-bold text-slate-800">
+                  <span>{lang === 'ar' ? 'النتيجة المعاد صياغتها' : 'Paraphrased Result'}</span>
+                  <span>{outputStats.words} {lang === 'ar' ? 'كلمة' : 'words'}</span>
+                </div>
+                <div className="flex-grow p-4 overflow-y-auto">
+                  {outputText ? (
+                    <textarea
+                      value={outputText}
+                      onChange={(e) => setOutputText(e.target.value)}
+                      className="w-full h-full resize-none border-none outline-none font-serif text-sm text-slate-900 bg-transparent"
+                    />
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-slate-400 text-xs">
+                      {lang === 'ar' ? 'النتيجة المعاد صياغتها ستظهر هنا' : 'Paraphrased output will appear here.'}
+                    </div>
+                  )}
+                </div>
+                <div className="p-3 border-t border-slate-100 bg-slate-50 rounded-b-xl flex justify-between items-center">
+                  <button
+                    onClick={handleCopy}
+                    disabled={!outputText}
+                    className="px-3 py-1.5 bg-white border border-slate-200 text-xs text-slate-700 rounded hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    {copied ? (lang === 'ar' ? 'تم النسخ' : 'Copied!') : (lang === 'ar' ? 'نسخ النتيجة' : 'Copy Result')}
+                  </button>
+                </div>
+              </div>
+
+            </div>
+          </main>
+
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
